@@ -1,0 +1,786 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_INFLUXDB",
+      "label": "InfluxDB",
+      "description": "Data source do InfluxDB (SQL) com o bucket bueiro_inteligente",
+      "type": "datasource",
+      "pluginId": "influxdb",
+      "pluginName": "InfluxDB"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "datasource",
+      "id": "influxdb",
+      "name": "InfluxDB",
+      "version": "1.0.0"
+    }
+  ],
+  "title": "bubu smart",
+  "uid": "bueiro-inteligente-v3",
+  "tags": [
+    "bueiro-inteligente",
+    "iot"
+  ],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "schemaVersion": 39,
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "table",
+      "title": "O que precisa ser feito agora",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "refId": "A",
+          "rawSql": "WITH ult AS (\n  SELECT id_bueiro, endereco, volume_l, capacidade_l, ocupacao_pct, status, time,\n         ROW_NUMBER() OVER (PARTITION BY id_bueiro ORDER BY time DESC) AS ordem\n  FROM \"leituras\"\n  WHERE time >= $__timeFrom AND time <= $__timeTo AND volume_l IS NOT NULL\n),\nlim AS (\n  SELECT id_bueiro, resultado,\n         ROW_NUMBER() OVER (PARTITION BY id_bueiro ORDER BY time DESC) AS ordem\n  FROM \"limpezas\"\n  WHERE time >= $__timeFrom AND time <= $__timeTo\n),\nbase AS (\n  SELECT u.id_bueiro, u.endereco, u.volume_l, u.capacidade_l, u.ocupacao_pct, u.status, l.resultado,\n         (CAST(now() AS BIGINT) - CAST(u.time AS BIGINT)) / 1000000000 AS seg\n  FROM ult u\n  LEFT JOIN lim l ON u.id_bueiro = l.id_bueiro AND l.ordem = 1\n  WHERE u.ordem = 1\n),\nclassif AS (\n  SELECT *,\n         CASE WHEN status = 'vermelho' AND resultado = 'nao_resolvida' THEN 1\n              WHEN seg > 30 THEN 2\n              WHEN status = 'vermelho' THEN 3\n              WHEN status = 'amarelo' THEN 4\n              ELSE 5 END AS prioridade\n  FROM base\n)\nSELECT prioridade AS \"Prioridade\",\n       id_bueiro  AS \"Bueiro\",\n       endereco   AS \"Endereço\",\n       CASE prioridade\n            WHEN 1 THEN 'Grade não resolveu'\n            WHEN 2 THEN 'Sem comunicação'\n            WHEN 3 THEN 'Crítico: grade em limpeza'\n            WHEN 4 THEN 'Atenção'\n            ELSE 'Normal' END AS \"Situação\",\n       CASE prioridade\n            WHEN 1 THEN 'Enviar equipe para limpeza manual'\n            WHEN 2 THEN 'Verificar o dispositivo no local'\n            WHEN 3 THEN 'Aguardar verificação automática (15 s)'\n            WHEN 4 THEN 'Acompanhar; programar limpeza se continuar subindo'\n            ELSE 'Nenhuma ação' END AS \"O que fazer\",\n       ocupacao_pct AS \"Ocupação (%)\",\n       volume_l     AS \"Resíduos (L)\",\n       CASE WHEN capacidade_l * 0.75 - volume_l > 0 THEN capacidade_l * 0.75 - volume_l ELSE 0 END AS \"Falta até o crítico (L)\",\n       CASE WHEN seg < 0 THEN 0 ELSE seg END AS \"Última leitura há\"\nFROM classif\nORDER BY prioridade, id_bueiro",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ],
+      "description": "Um bueiro por linha, do mais urgente para o menos urgente, com a situação atual e a ação recomendada para a equipe.",
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prioridade"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 95
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "1 – Urgente",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "2 – Alta",
+                        "color": "#FF9830",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "3 – Média",
+                        "color": "#FF9830",
+                        "index": 2
+                      },
+                      "4": {
+                        "text": "4 – Baixa",
+                        "color": "#EAB839",
+                        "index": 3
+                      },
+                      "5": {
+                        "text": "5 – OK",
+                        "color": "green",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Bueiro"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Endereço"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 250
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Situação"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 190
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Grade não resolveu": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "Sem comunicação": {
+                        "color": "#FF9830",
+                        "index": 1
+                      },
+                      "Crítico: grade em limpeza": {
+                        "color": "#FF9830",
+                        "index": 2
+                      },
+                      "Atenção": {
+                        "color": "#EAB839",
+                        "index": 3
+                      },
+                      "Normal": {
+                        "color": "green",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "O que fazer"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 330
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto",
+                  "wrapText": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ocupação (%)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 50
+                    },
+                    {
+                      "color": "red",
+                      "value": 75
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Resíduos (L)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "suffix: L"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Falta até o crítico (L)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "suffix: L"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Última leitura há"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 30
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "id": 1,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      }
+    },
+    {
+      "type": "geomap",
+      "title": "Mapa dos bueiros",
+      "gridPos": {
+        "x": 16,
+        "y": 6,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "refId": "A",
+          "rawSql": "WITH ultimas AS (\n  SELECT id_bueiro, endereco, latitude, longitude, volume_l, ocupacao_pct,\n         ROW_NUMBER() OVER (PARTITION BY id_bueiro ORDER BY time DESC) AS ordem\n  FROM \"leituras\"\n  WHERE time >= $__timeFrom AND time <= $__timeTo AND volume_l IS NOT NULL\n)\nSELECT id_bueiro    AS \"Bueiro\",\n       endereco     AS \"Endereço\",\n       latitude,\n       longitude,\n       volume_l     AS \"Resíduos (L)\",\n       ocupacao_pct AS \"Ocupação (%)\"\nFROM ultimas\nWHERE ordem = 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": -23.5464,
+          "lon": -46.6514,
+          "zoom": 16.3,
+          "allLayers": true
+        },
+        "controls": {
+          "showZoom": true,
+          "mouseWheelZoom": true,
+          "showAttribution": true
+        },
+        "basemap": {
+          "type": "default",
+          "name": "Mapa base",
+          "config": {}
+        },
+        "tooltip": {
+          "mode": "details"
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Ocupação (%)",
+            "tooltip": true,
+            "location": {
+              "mode": "coords",
+              "latitude": "latitude",
+              "longitude": "longitude"
+            },
+            "config": {
+              "showLegend": true,
+              "style": {
+                "size": {
+                  "fixed": 12
+                },
+                "color": {
+                  "field": "Ocupação (%)",
+                  "fixed": "green"
+                },
+                "symbol": {
+                  "mode": "fixed",
+                  "fixed": "img/icons/marker/circle.svg"
+                },
+                "opacity": 0.9,
+                "text": {
+                  "mode": "field",
+                  "field": "Bueiro",
+                  "fixed": ""
+                },
+                "textConfig": {
+                  "fontSize": 11,
+                  "offsetY": -16,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 75
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "id": 2,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Histórico da ocupação por bueiro (%)",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 16,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "refId": "A",
+          "rawSql": "SELECT time, id_bueiro, ocupacao_pct\nFROM \"leituras\"\nWHERE time >= $__timeFrom AND time <= $__timeTo AND volume_l IS NOT NULL\nORDER BY time",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ],
+      "description": "Evolução do volume de resíduos em relação à capacidade de cada caixa. As quedas logo após ultrapassar 75% mostram a atuação da grade autolimpante.",
+      "transformations": [
+        {
+          "id": "prepareTimeSeries",
+          "options": {
+            "format": "multi"
+          }
+        }
+      ],
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "displayName": "${__field.labels.id_bueiro}",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 75
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": 60000,
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "id": 3,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      }
+    },
+    {
+      "type": "barchart",
+      "title": "Eficácia da grade autolimpante por bueiro",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 9,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "refId": "A",
+          "rawSql": "SELECT id_bueiro AS \"Bueiro\",\n       SUM(CASE WHEN resultado = 'resolvida'     THEN 1 ELSE 0 END) AS \"Resolvidas pela grade\",\n       SUM(CASE WHEN resultado = 'nao_resolvida' THEN 1 ELSE 0 END) AS \"Encaminhadas à equipe\"\nFROM \"limpezas\"\nWHERE time >= $__timeFrom AND time <= $__timeTo\nGROUP BY id_bueiro\nORDER BY id_bueiro",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ],
+      "description": "Bueiros com muitas limpezas encaminhadas à equipe recebem resíduos grandes com frequência e devem ter prioridade na rota de zeladoria.",
+      "options": {
+        "orientation": "horizontal",
+        "stacking": "normal",
+        "showValue": "always",
+        "xField": "Bueiro",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "barWidth": 0.6,
+        "groupWidth": 0.7,
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "custom": {
+            "fillOpacity": 85,
+            "lineWidth": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Resolvidas pela grade"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Encaminhadas à equipe"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "id": 4,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Últimas limpezas automáticas",
+      "gridPos": {
+        "x": 9,
+        "y": 15,
+        "w": 15,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "refId": "A",
+          "rawSql": "SELECT time AS \"Horário\",\n       id_bueiro AS \"Bueiro\",\n       CASE WHEN resultado = 'resolvida' THEN 'Resolvida pela grade'\n            ELSE 'Encaminhada à equipe' END AS \"Resultado da limpeza\",\n       volume_l AS \"Resíduos após a limpeza (L)\",\n       ocupacao_pct AS \"Ocupação após a limpeza (%)\"\nFROM \"limpezas\"\nWHERE time >= $__timeFrom AND time <= $__timeTo\nORDER BY time DESC\nLIMIT 10",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Horário"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Resultado da limpeza"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Resolvida pela grade": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "Encaminhada à equipe": {
+                        "color": "#FF9830",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Resíduos após a limpeza (L)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "suffix: L"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ocupação após a limpeza (%)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "id": 5,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}
