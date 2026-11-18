@@ -1,0 +1,526 @@
+[
+  {
+    "id": "bi2_tab",
+    "type": "tab",
+    "label": "Bueiro Inteligente",
+    "disabled": false,
+    "info": "Fluxo do projeto Bueiro Inteligente: recebe o volume de resíduos de cada bueiro via MQTT, calcula a ocupação da caixa, classifica o estado, grava no InfluxDB, aciona a grade autolimpante quando o bueiro fica crítico, verifica o resultado da limpeza e alerta a equipe pelo Telegram se a limpeza automática não resolver.",
+    "env": [
+      {
+        "name": "TELEGRAM_BOT_TOKEN",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "TELEGRAM_CHAT_ID",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "LINK_DASHBOARD",
+        "value": "",
+        "type": "str"
+      }
+    ]
+  },
+  {
+    "id": "bi2_c1",
+    "type": "comment",
+    "name": "1) Leitura do volume → ocupação e estado → InfluxDB / limpeza automática",
+    "info": "",
+    "x": 260,
+    "y": 40,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_in_vol",
+    "type": "mqtt in",
+    "name": "+/sensor/volume",
+    "topic": "mackenzie/bueiro-inteligente/+/sensor/volume",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 140,
+    "y": 120,
+    "wires": [
+      [
+        "bi2_proc"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_proc",
+    "type": "function",
+    "name": "Processar leitura",
+    "func": "// Tópico: mackenzie/bueiro-inteligente/{id_bueiro}/sensor/volume\n// Payload: volume de resíduos na caixa da boca de lobo, em litros\nconst idBueiro = msg.topic.split('/')[2];\nconst volume = parseFloat(msg.payload);\n\nif (isNaN(volume)) {\n    node.warn(`Valor inválido em ${msg.topic}: ${msg.payload}`);\n    return null;\n}\n\n// Cadastro dos bueiros: localização e capacidade da caixa (litros).\n// Capacidade = dimensões internas da caixa (SINAPI) x 1000.\n//   bueiro01: caixa simples 1,00 x 0,60 x 1,20 m = 720 L\n//   bueiro02: caixa dupla   2,20 x 0,60 x 1,20 m = 1584 L\n// Para incluir um novo bueiro, basta acrescentar uma linha aqui.\nconst cadastroBueiros = {\n    bueiro01: {\n        endereco: 'Rua da Consolação, 930 - Consolação, São Paulo/SP',\n        latitude: -23.5475, longitude: -46.6520, capacidade_l: 720\n    },\n    bueiro02: {\n        endereco: 'Rua Maria Antônia, 294 - Vila Buarque, São Paulo/SP',\n        latitude: -23.5452, longitude: -46.6508, capacidade_l: 1584\n    }\n};\n\nconst local = cadastroBueiros[idBueiro];\nif (!local) {\n    node.warn(`Bueiro ${idBueiro} não cadastrado.`);\n    return null;\n}\n\n// Regra 1 - classificação pela ocupação da caixa (%)\nconst LIMITE_ATENCAO = 50;\nconst LIMITE_CRITICO = 75;\nconst ocupacao = Math.round(volume / local.capacidade_l * 1000) / 10;\n\nlet status;\nif (ocupacao >= LIMITE_CRITICO) status = 'vermelho';\nelse if (ocupacao >= LIMITE_ATENCAO) status = 'amarelo';\nelse status = 'verde';\n\n// Guarda a última leitura de cada bueiro (usada na verificação da limpeza)\nconst ultimas = flow.get('ultimas') || {};\nultimas[idBueiro] = { volume_l: volume, ocupacao_pct: ocupacao, status: status };\nflow.set('ultimas', ultimas);\n\nmsg.topic = idBueiro;          // separa o filtro \"só quando muda\" por bueiro\nmsg.id_bueiro = idBueiro;\nmsg.volume_l = volume;\nmsg.ocupacao_pct = ocupacao;\nmsg.status = status;\nmsg.local = local;\n\nconst cores = { verde: 'green', amarelo: 'yellow', vermelho: 'red' };\nnode.status({ fill: cores[status], shape: 'dot', text: `${idBueiro}: ${volume} L (${ocupacao}%)` });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 350,
+    "y": 120,
+    "wires": [
+      [
+        "bi2_fn_influx",
+        "bi2_rbe",
+        "bi2_dbg_leitura"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_fn_influx",
+    "type": "function",
+    "name": "Montar ponto InfluxDB",
+    "func": "// Monta o ponto do InfluxDB: [campos, tags]\nmsg.payload = [\n    {\n        volume_l: msg.volume_l,\n        capacidade_l: msg.local.capacidade_l,\n        ocupacao_pct: msg.ocupacao_pct,\n        status: msg.status,\n        endereco: msg.local.endereco,\n        latitude: msg.local.latitude,\n        longitude: msg.local.longitude\n    },\n    { id_bueiro: msg.id_bueiro }\n];\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 600,
+    "y": 80,
+    "wires": [
+      [
+        "bi2_influx_out"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_influx_out",
+    "type": "influxdb out",
+    "influxdb": "bi_influx_cfg",
+    "name": "Gravar leituras",
+    "measurement": "leituras",
+    "precision": "",
+    "retentionPolicy": "",
+    "database": "",
+    "precisionV18FluxV20": "ms",
+    "retentionPolicyV18Flux": "",
+    "org": "SUA_ORGANIZACAO",
+    "bucket": "bueiro_inteligente",
+    "x": 830,
+    "y": 80,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_rbe",
+    "type": "rbe",
+    "name": "Só quando o estado muda",
+    "func": "rbe",
+    "gap": "",
+    "start": "",
+    "inout": "out",
+    "septopics": true,
+    "property": "status",
+    "topi": "topic",
+    "x": 610,
+    "y": 140,
+    "wires": [
+      [
+        "bi2_switch"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_switch",
+    "type": "switch",
+    "name": "É crítico?",
+    "property": "status",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "vermelho",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 800,
+    "y": 140,
+    "wires": [
+      [
+        "bi2_fn_limpar"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_fn_limpar",
+    "type": "function",
+    "name": "Montar comando de limpeza",
+    "func": "// Regra 3 - limpeza automática: publica o comando para o bueiro crítico\nmsg.topic = `mackenzie/bueiro-inteligente/${msg.id_bueiro}/grade/comando`;\nmsg.payload = 'limpar';\nnode.status({ fill: 'blue', shape: 'dot', text: `limpeza solicitada: ${msg.id_bueiro}` });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1000,
+    "y": 140,
+    "wires": [
+      [
+        "bi2_mqtt_cmd"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_mqtt_cmd",
+    "type": "mqtt out",
+    "name": "grade/comando",
+    "topic": "",
+    "qos": "1",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "bi_broker",
+    "x": 1210,
+    "y": 140,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_dbg_leitura",
+    "type": "debug",
+    "name": "Leitura processada",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 610,
+    "y": 200,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_c2",
+    "type": "comment",
+    "name": "2) Resultado da limpeza → registro no InfluxDB → alerta à equipe se não resolver",
+    "info": "",
+    "x": 290,
+    "y": 280,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_in_conf",
+    "type": "mqtt in",
+    "name": "+/grade/confirmacao",
+    "topic": "mackenzie/bueiro-inteligente/+/grade/confirmacao",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 360,
+    "wires": [
+      [
+        "bi2_dbg_conf",
+        "bi2_sw_concluida"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_dbg_conf",
+    "type": "debug",
+    "name": "Confirmação da grade",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 400,
+    "y": 320,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_sw_concluida",
+    "type": "switch",
+    "name": "Limpeza concluída?",
+    "property": "payload",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "limpeza_concluida",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 400,
+    "y": 380,
+    "wires": [
+      [
+        "bi2_delay"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_delay",
+    "type": "delay",
+    "name": "Aguardar novas leituras (15 s)",
+    "pauseType": "delay",
+    "timeout": "15",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 630,
+    "y": 380,
+    "wires": [
+      [
+        "bi2_fn_verifica"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_fn_verifica",
+    "type": "function",
+    "name": "Limpeza resolveu?",
+    "func": "// Regra 4 - 15 s após o fim da limpeza, confere a ocupação atual do bueiro\n// Saída 1: não resolveu (alerta à equipe)\n// Saída 2: resolveu (apenas registro)\n// Saída 3: registro do resultado no InfluxDB (measurement \"limpezas\")\nconst LIMITE_CRITICO = 75;\n\nconst idBueiro = msg.topic.split('/')[2];\nconst ultimas = flow.get('ultimas') || {};\nconst atual = ultimas[idBueiro];\n\nif (!atual) {\n    node.warn(`Sem leitura recente do ${idBueiro} para verificar a limpeza.`);\n    return null;\n}\n\nconst resolvida = atual.ocupacao_pct < LIMITE_CRITICO;\n\nmsg.id_bueiro = idBueiro;\nmsg.volume_l = atual.volume_l;\nmsg.ocupacao_pct = atual.ocupacao_pct;\n\nconst registro = {\n    payload: [\n        {\n            resultado: resolvida ? 'resolvida' : 'nao_resolvida',\n            volume_l: atual.volume_l,\n            ocupacao_pct: atual.ocupacao_pct\n        },\n        { id_bueiro: idBueiro }\n    ]\n};\n\nif (resolvida) {\n    node.status({ fill: 'green', shape: 'dot', text: `${idBueiro}: resolvida (${atual.ocupacao_pct}%)` });\n    msg.payload = `${idBueiro}: limpeza automática resolveu (ocupação ${atual.ocupacao_pct}%)`;\n    return [null, msg, registro];\n}\nnode.status({ fill: 'red', shape: 'dot', text: `${idBueiro}: não resolveu (${atual.ocupacao_pct}%)` });\nreturn [msg, null, registro];",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 860,
+    "y": 380,
+    "wires": [
+      [
+        "bi2_fn_tg"
+      ],
+      [
+        "bi2_dbg_ok"
+      ],
+      [
+        "bi2_influx_limp"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_fn_tg",
+    "type": "function",
+    "name": "Montar alerta Telegram",
+    "func": "const token = env.get('TELEGRAM_BOT_TOKEN');\nconst chatId = env.get('TELEGRAM_CHAT_ID');\n\nif (!token || !chatId) {\n    node.warn('Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID nas variáveis de ambiente da aba.');\n    return null;\n}\n\n// Mesmo cadastro da function \"Processar leitura\"\nconst cadastroBueiros = {\n    bueiro01: { endereco: 'Rua da Consolação, 930 - Consolação, São Paulo/SP', capacidade_l: 720 },\n    bueiro02: { endereco: 'Rua Maria Antônia, 294 - Vila Buarque, São Paulo/SP', capacidade_l: 1584 }\n};\n\nconst LIMITE_CRITICO = 75;\nconst LINK_DASHBOARD = env.get('LINK_DASHBOARD') || 'https://vibrantminivan1185.grafana.net';\n\nconst local = cadastroBueiros[msg.id_bueiro] || { endereco: 'Endereço não cadastrado', capacidade_l: 0 };\n\nconst fmt = (n, casas) => Number(n).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });\n\nconst dataHora = new Date().toLocaleString('pt-BR', {\n    timeZone: 'America/Sao_Paulo',\n    day: '2-digit', month: '2-digit', year: 'numeric',\n    hour: '2-digit', minute: '2-digit'\n});\n\nconst texto =\n    `🚨 <b>Limpeza manual necessária – ${msg.id_bueiro}</b>\\n` +\n    `📍 ${local.endereco}\\n` +\n    `\\n` +\n    `<b>Resíduos na caixa:</b> ${fmt(msg.volume_l, 0)} L de ${fmt(local.capacidade_l, 0)} L ` +\n    `(${fmt(msg.ocupacao_pct, 1)}%, limite crítico: ${LIMITE_CRITICO}%)\\n` +\n    `A grade autolimpante foi acionada, mas não removeu os resíduos. ` +\n    `Provável acúmulo de material grande (sacos, galhos ou entulho).\\n` +\n    `\\n` +\n    `👷 <b>O que fazer:</b> enviar a equipe de zeladoria para limpeza manual, evitando o entupimento do bueiro e o alagamento da via.\\n` +\n    `\\n` +\n    `🕘 ${dataHora} · 📊 <a href=\"${LINK_DASHBOARD}\">Ver no dashboard</a>`;\n\nmsg.url = `https://api.telegram.org/bot${token}/sendMessage`;\nmsg.method = 'POST';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    chat_id: chatId,\n    text: texto,\n    parse_mode: 'HTML',\n    disable_web_page_preview: true\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1080,
+    "y": 340,
+    "wires": [
+      [
+        "bi2_http"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_http",
+    "type": "http request",
+    "name": "API Telegram (sendMessage)",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 1320,
+    "y": 340,
+    "wires": [
+      [
+        "bi2_dbg_tg"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_dbg_tg",
+    "type": "debug",
+    "name": "Resposta Telegram",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1550,
+    "y": 340,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_dbg_ok",
+    "type": "debug",
+    "name": "Limpeza resolvida",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1080,
+    "y": 390,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_influx_limp",
+    "type": "influxdb out",
+    "influxdb": "bi_influx_cfg",
+    "name": "Gravar resultado da limpeza",
+    "measurement": "limpezas",
+    "precision": "",
+    "retentionPolicy": "",
+    "database": "",
+    "precisionV18FluxV20": "ms",
+    "retentionPolicyV18Flux": "",
+    "org": "SUA_ORGANIZACAO",
+    "bucket": "bueiro_inteligente",
+    "x": 1110,
+    "y": 440,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_c3",
+    "type": "comment",
+    "name": "3) Tratamento de falhas (InfluxDB e Telegram)",
+    "info": "",
+    "x": 200,
+    "y": 520,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_catch",
+    "type": "catch",
+    "name": "Erros das integrações",
+    "scope": [
+      "bi2_influx_out",
+      "bi2_influx_limp",
+      "bi2_http"
+    ],
+    "uncaught": false,
+    "x": 160,
+    "y": 580,
+    "wires": [
+      [
+        "bi2_dbg_erro"
+      ]
+    ],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi2_dbg_erro",
+    "type": "debug",
+    "name": "Log de erros",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 380,
+    "y": 580,
+    "wires": [],
+    "z": "bi2_tab"
+  },
+  {
+    "id": "bi_broker",
+    "type": "mqtt-broker",
+    "name": "HiveMQ Público",
+    "broker": "broker.hivemq.com",
+    "port": "1883",
+    "clientid": "bueiro-nodered",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": ""
+  },
+  {
+    "id": "bi_influx_cfg",
+    "type": "influxdb",
+    "hostname": "127.0.0.1",
+    "port": "8086",
+    "protocol": "http",
+    "database": "database",
+    "name": "InfluxDB Cloud",
+    "usetls": false,
+    "tls": "",
+    "influxdbVersion": "2.0",
+    "url": "https://us-east-1-1.aws.cloud2.influxdata.com",
+    "rejectUnauthorized": true
+  }
+]
