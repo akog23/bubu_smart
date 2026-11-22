@@ -90,7 +90,9 @@ float medirDistanciaCm() {
 
   long duracao = pulseIn(PIN_ECHO, HIGH, 30000);
   if (duracao == 0) return PROFUNDIDADE_CM; // sem eco: considera caixa vazia
-  return duracao * 0.0343 / 2.0;
+  // Velocidade do som de 340 m/s (0,034 cm/µs), a mesma do datasheet do
+  // HC-SR04 (distância em cm = tempo em µs / 58) e do sensor simulado no Wokwi
+  return duracao * 0.034 / 2.0;
 }
 
 // Converte a distância em volume de resíduos (litros)
