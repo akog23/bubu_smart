@@ -4,7 +4,7 @@ Projeto da disciplina **Objetos Inteligentes Conectados** — Universidade Presb
 
 **Integrantes:** Ana Beatriz Oliveira, Gustavo Pan, Isaac Carone e Wallace Santana
 
-**Vídeo de demonstração:** _link do YouTube (a ser incluído)_
+**Vídeo de demonstração:** https://youtu.be/wfyiKgpd9vA
 
 ---
 
